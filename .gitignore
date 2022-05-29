@@ -32,3 +32,8 @@
 *.app
 /.vs
 /out/build/x64-Debug
+/.idea
+/cmake-build-debug
+/cmake-build-release
+/libs/boost_1_79_0
+/libs/GSL-4.0.0

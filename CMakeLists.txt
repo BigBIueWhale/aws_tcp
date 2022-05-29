@@ -41,6 +41,11 @@ elseif (CMAKE_CXX_COMPILER_ID MATCHES GNU)
 
 endif()
 
+add_executable(aws_tcp main.cpp)
+
+target_include_directories(aws_tcp PUBLIC "${CMAKE_SOURCE_DIR}/libs/GSL-4.0.0/include")
+target_include_directories(aws_tcp PUBLIC "${CMAKE_SOURCE_DIR}/libs/boost_1_79_0")
+
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
     if (CMAKE_CXX_COMPILER_ID MATCHES GNU)
         target_link_libraries(aws_tcp PUBLIC wsock32 ws2_32)
@@ -54,8 +59,3 @@ elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
 else()
     message(FATAL_ERROR "Not Windows or Linux")
 endif()
-
-add_executable(aws_tcp main.cpp)
-
-target_include_directories(aws_tcp PUBLIC "${CMAKE_SOURCE_DIR}/libs/GSL-4.0.0/include")
-target_include_directories(aws_tcp PUBLIC "${CMAKE_SOURCE_DIR}/libs/boost_1_79_0")
