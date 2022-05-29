@@ -59,9 +59,10 @@ protected:
             }
             else {
                 const auto bytes_received{
-                    std::span<const std::byte>(
+                    std::span<const std::byte>{
                             instance->m_buffer->cbegin(),
-                            instance->m_buffer->cbegin() + static_cast<std::ptrdiff_t>(amount_bytes_read))
+                            instance->m_buffer->cbegin() + static_cast<std::ptrdiff_t>(amount_bytes_read)
+                    }
                 };
                 instance->m_callback_receive(bytes_received);
                 instance->reading_chain();
@@ -136,11 +137,12 @@ public:
                                                std::function<void(std::string_view)> callback_errors)
     {
         auto ret = std::shared_ptr<acceptor_chain>{
-                new acceptor_chain(
+                new acceptor_chain{
                         std::move(butler),
                         local_endpoint,
                         std::move(callback_socket),
-                        std::move(callback_errors))
+                        std::move(callback_errors)
+                }
         };
         ret->callback_chain();
         return ret;
