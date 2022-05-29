@@ -11,6 +11,8 @@
 #include <memory>
 #include <array>
 #include <exception>
+#include <stdexcept>
+#include <functional>
 #include <gsl/gsl>
 
 #include <iostream>
@@ -26,11 +28,17 @@ protected:
     gsl::not_null<std::unique_ptr<std::array<std::byte, 0xffff>>> m_buffer{
         std::make_unique<std::array<std::byte, 0xffff>>()
     };
+    std::function<void(std::span<const std::byte>)> m_callback_receive;
+    std::function<void(std::string_view)> m_callback_error;
     explicit reader_chain(std::shared_ptr<asio::io_context> butler,
-                            std::shared_ptr<asio::ip::tcp::socket> socket)
+                          std::shared_ptr<asio::ip::tcp::socket> socket,
+                          std::function<void(std::span<const std::byte>)> callback_receive,
+                          std::function<void(std::string_view)> callback_error)
         : m_butler{ std::move(butler) },
         m_socket{ std::move(socket) },
-        m_remote_endpoint{ this->m_socket->remote_endpoint() }
+        m_remote_endpoint{ this->m_socket->remote_endpoint() },
+        m_callback_receive{ std::move(callback_receive) },
+        m_callback_error{ std::move(callback_error) }
     {}
     void reading_chain() {
         auto instance = this->shared_from_this();
@@ -47,19 +55,15 @@ protected:
                 if (instance->m_butler->stopped()) {
                     message << " io_context was stopped.";
                 }
-                message << '\n';
-                std::cout << message.str() << std::flush;
+                instance->m_callback_error(message.str());
             }
             else {
-                std::ostringstream message;
-                message << "Read " << amount_bytes_read << " bytes"
-                        << " from: " << instance->m_remote_endpoint << '\n';
-                message << "The data: ";
-                message.write(
-                        std::launder(reinterpret_cast<const char*>(instance->m_buffer->data())),
-                        static_cast<std::ptrdiff_t>(amount_bytes_read));
-                message << '\n';
-                std::cout << message.str() << std::flush;
+                const auto bytes_received{
+                    std::span<const std::byte>(
+                            instance->m_buffer->cbegin(),
+                            instance->m_buffer->cbegin() + static_cast<std::ptrdiff_t>(amount_bytes_read))
+                };
+                instance->m_callback_receive(bytes_received);
                 instance->reading_chain();
             }
         };
@@ -67,8 +71,17 @@ protected:
     }
 public:
     static std::shared_ptr<reader_chain> New(std::shared_ptr<asio::io_context> butler,
-                                             std::shared_ptr<asio::ip::tcp::socket> socket) {
-        auto instance = std::shared_ptr<reader_chain>(new reader_chain{ std::move(butler), std::move(socket) });
+                                             std::shared_ptr<asio::ip::tcp::socket> socket,
+                                             std::function<void(std::span<const std::byte>)> callback_receive,
+                                             std::function<void(std::string_view)> callback_error) {
+        auto instance = std::shared_ptr<reader_chain>{
+                new reader_chain{
+                        std::move(butler),
+                        std::move(socket),
+                        std::move(callback_receive),
+                        std::move(callback_error)
+                }
+        };
         instance->reading_chain();
         return instance;
     }
@@ -78,10 +91,16 @@ class acceptor_chain : public std::enable_shared_from_this<acceptor_chain> {
 protected:
     gsl::not_null<std::shared_ptr<asio::io_context>> m_butler;
     asio::ip::tcp::acceptor m_acceptor;
+    std::function<void(std::shared_ptr<asio::ip::tcp::socket>)> m_callback_socket;
+    std::function<void(std::string_view)> m_callback_errors;
     explicit acceptor_chain(std::shared_ptr<asio::io_context> butler,
-                            const asio::ip::tcp::endpoint& local_endpoint)
+                            const asio::ip::tcp::endpoint& local_endpoint,
+                            std::function<void(std::shared_ptr<asio::ip::tcp::socket>)> callback_socket,
+                            std::function<void(std::string_view)> callback_errors)
         : m_butler{ std::move(butler) },
-        m_acceptor{ *this->m_butler, local_endpoint }
+        m_acceptor{ *this->m_butler, local_endpoint },
+        m_callback_socket{ std::move(callback_socket) },
+        m_callback_errors{ std::move(callback_errors) }
     {
         this->m_acceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true));
     }
@@ -94,21 +113,15 @@ protected:
             bool io_context_was_stopped = false;
             if (error.operator bool()) {
                 std::ostringstream message;
-                message << "Error in acceptor callback chain: " << error << '\n';
+                message << "Error in acceptor callback chain: " << error;
                 if (instance->m_butler->stopped()) {
                     io_context_was_stopped = true;
-                    message << "io_context was stopped.";
+                    message << " io_context was stopped.";
                 }
-                std::cout << message.str() << std::flush;
+                instance->m_callback_errors(message.str());
             }
             else {
-                std::ostringstream message;
-                message << "Successfully connected to: " << sock->remote_endpoint() << '\n';
-                std::cout << message.str() << std::flush;
-                // The reading_chain object will extend its own lifetime
-                {
-                    auto reader = reader_chain::New(instance->m_butler, std::move(sock));
-                }
+                instance->m_callback_socket(std::move(sock));
             }
             if (!io_context_was_stopped) {
                 instance->callback_chain();
@@ -118,8 +131,17 @@ protected:
     }
 public:
     static std::shared_ptr<acceptor_chain> New(std::shared_ptr<asio::io_context> butler,
-                                        const asio::ip::tcp::endpoint& local_endpoint) {
-        auto ret = std::shared_ptr<acceptor_chain>(new acceptor_chain(std::move(butler), local_endpoint));
+                                               const asio::ip::tcp::endpoint& local_endpoint,
+                                               std::function<void(std::shared_ptr<asio::ip::tcp::socket>)> callback_socket,
+                                               std::function<void(std::string_view)> callback_errors)
+    {
+        auto ret = std::shared_ptr<acceptor_chain>{
+                new acceptor_chain(
+                        std::move(butler),
+                        local_endpoint,
+                        std::move(callback_socket),
+                        std::move(callback_errors))
+        };
         ret->callback_chain();
         return ret;
     }
@@ -151,12 +173,6 @@ public:
             std::ostringstream err_msg;
             err_msg << "Can\'t throw exception from: " << __FUNCTION__
                     << " Error message: " << e.what() << "\n";
-            std::cerr << err_msg.str() << std::flush;
-        }
-        catch (...) {
-            std::ostringstream err_msg;
-            err_msg << "Can\'t throw exception from: " << __FUNCTION__
-                    << " The error message is unavailable" << "\n";
             std::cerr << err_msg.str() << std::flush;
         }
     }
@@ -196,9 +212,36 @@ int main() {
         std::future<void> thread_running_butler = std::async(std::launch::async, thread_run_butler);
         // The acceptor_chain will extend its own lifetime
         {
-            auto acceptor = acceptor_chain::New(
+            auto callback_socket = [butler](std::shared_ptr<asio::ip::tcp::socket> sock) -> void
+            {
+                auto callback_receive = [sock](const std::span<const std::byte> bytes_received) -> void
+                {
+                    std::ostringstream message;
+                    message << "Received " << bytes_received.size() << " bytes" << '\n';
+                    std::cout << message.str() << std::flush;
+                };
+                auto callback_error = [](const std::string_view error_message) -> void
+                {
+                    std::cout << error_message << std::endl;
+                };
+                // The reading_chain object will extend its own lifetime
+                {
+                    const auto reader = reader_chain::New(
+                            butler,
+                            std::move(sock),
+                            std::move(callback_receive),
+                            std::move(callback_error));
+                }
+            };
+            auto callback_errors = [](const std::string_view error_message) -> void
+            {
+                std::cout << error_message << std::endl;
+            };
+            const auto acceptor = acceptor_chain::New(
                     butler,
-                    asio::ip::tcp::endpoint{asio::ip::tcp::v4(), 1234});
+                    asio::ip::tcp::endpoint{asio::ip::tcp::v4(), 1234},
+                    std::move(callback_socket),
+                    std::move(callback_errors));
         }
         work_guard.reset();
         while (true) {
