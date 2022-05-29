@@ -10,6 +10,7 @@
 #include <future>
 #include <memory>
 #include <array>
+#include <list>
 #include <exception>
 #include <stdexcept>
 #include <functional>
@@ -28,8 +29,8 @@ protected:
     gsl::not_null<std::unique_ptr<std::array<std::byte, 0xffff>>> m_buffer{
         std::make_unique<std::array<std::byte, 0xffff>>()
     };
-    std::function<void(std::span<const std::byte>)> m_callback_receive;
-    std::function<void(std::string_view)> m_callback_error;
+    gsl::not_null<std::function<void(std::span<const std::byte>)>> m_callback_receive;
+    gsl::not_null<std::function<void(std::string_view)>> m_callback_error;
     explicit reader_chain(std::shared_ptr<asio::io_context> butler,
                           std::shared_ptr<asio::ip::tcp::socket> socket,
                           std::function<void(std::span<const std::byte>)> callback_receive,
@@ -52,10 +53,15 @@ protected:
                     message << " eof";
                 }
                 message << " Remote endpoint: " << instance->m_remote_endpoint;
-                if (instance->m_butler->stopped()) {
-                    message << " io_context was stopped.";
+                if (error == asio::error::connection_aborted) {
+                    message << " connection_aborted";
                 }
-                instance->m_callback_error(message.str());
+                boost::system::error_code close_error{};
+                instance->m_socket->close(close_error);
+                if (close_error.operator bool()) {
+                    message << " failed to close socket: " << close_error;
+                }
+                instance->m_callback_error.get()(message.str());
             }
             else {
                 const auto bytes_received{
@@ -64,7 +70,7 @@ protected:
                             instance->m_buffer->cbegin() + static_cast<std::ptrdiff_t>(amount_bytes_read)
                     }
                 };
-                instance->m_callback_receive(bytes_received);
+                instance->m_callback_receive.get()(bytes_received);
                 instance->reading_chain();
             }
         };
@@ -92,8 +98,8 @@ class acceptor_chain : public std::enable_shared_from_this<acceptor_chain> {
 protected:
     gsl::not_null<std::shared_ptr<asio::io_context>> m_butler;
     asio::ip::tcp::acceptor m_acceptor;
-    std::function<void(std::shared_ptr<asio::ip::tcp::socket>)> m_callback_socket;
-    std::function<void(std::string_view)> m_callback_errors;
+    gsl::not_null<std::function<void(std::shared_ptr<asio::ip::tcp::socket>)>> m_callback_socket;
+    gsl::not_null<std::function<void(std::string_view)>> m_callback_errors;
     explicit acceptor_chain(std::shared_ptr<asio::io_context> butler,
                             const asio::ip::tcp::endpoint& local_endpoint,
                             std::function<void(std::shared_ptr<asio::ip::tcp::socket>)> callback_socket,
@@ -119,10 +125,10 @@ protected:
                     io_context_was_stopped = true;
                     message << " io_context was stopped.";
                 }
-                instance->m_callback_errors(message.str());
+                instance->m_callback_errors.get()(message.str());
             }
             else {
-                instance->m_callback_socket(std::move(sock));
+                instance->m_callback_socket.get()(std::move(sock));
             }
             if (!io_context_was_stopped) {
                 instance->callback_chain();
@@ -197,6 +203,12 @@ int main() {
         const auto stop_butler_and_running_thread = [butler, early_stop]() -> void
         {
             early_stop->store(true);
+            // TODO: Cancel all open sockets gracefully before calling io_context.stop().
+            //       Do this by calling tcp::socket.shutdown(tcp::socket::shutdown_receive)
+            //       from the same thread as the io_context.
+            //       That will cause a "reading_chain::callback_read" to close the socket.
+            //       Maybe maintain a list of weak_ptr to the sockets ?
+            //       https://github.com/boostorg/beast/issues/2004#issuecomment-653046539
             butler->stop();
         };
         const auto stop_butler_upon_exception = exit_failure{
@@ -212,9 +224,11 @@ int main() {
             }
         };
         std::future<void> thread_running_butler = std::async(std::launch::async, thread_run_butler);
+
         // The acceptor_chain will extend its own lifetime
         {
-            auto callback_socket = [butler](std::shared_ptr<asio::ip::tcp::socket> sock) -> void
+            auto callback_socket =
+                [butler = gsl::make_not_null(butler)](std::shared_ptr<asio::ip::tcp::socket> sock) -> void
             {
                 auto callback_receive = [sock](const std::span<const std::byte> bytes_received) -> void
                 {
@@ -241,15 +255,18 @@ int main() {
             };
             const auto acceptor = acceptor_chain::New(
                     butler,
-                    asio::ip::tcp::endpoint{asio::ip::tcp::v4(), 1234},
+                    asio::ip::tcp::endpoint{ asio::ip::tcp::v4(), 1234 },
                     std::move(callback_socket),
                     std::move(callback_errors));
         }
         work_guard.reset();
+
         while (true) {
             if (g_program_ending) {
                 stop_butler_and_running_thread();
             }
+            // Sleep to avoid busy-waiting on the global variable.
+            // TODO: Why don't really need to try to join the running thread here
             const auto join_status = thread_running_butler.wait_for(std::chrono::milliseconds(14));
             if (join_status == std::future_status::ready) {
                 thread_running_butler.get();
