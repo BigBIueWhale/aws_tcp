@@ -37,3 +37,4 @@
 /cmake-build-release
 /libs/boost_1_79_0
 /libs/GSL-4.0.0
+/out/build/x64-Release

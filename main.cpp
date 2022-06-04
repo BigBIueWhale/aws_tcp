@@ -57,7 +57,7 @@ namespace tcp {
             return this->m_id;
         }
         void stop() {
-            auto callback_shutdown = [instance = this->shared_from_this()]() mutable -> void {
+            auto callback_shutdown = [instance = this->shared_from_this()]() -> void {
                 try {
                     if (instance->m_socket_state == socket_state_e::active) {
                         instance->m_socket_state = socket_state_e::shutdown;
@@ -118,7 +118,8 @@ namespace tcp {
                 std::ostringstream err_msg;
                 err_msg << "Error in function \"" << BOOST_CURRENT_FUNCTION << "\""
                     << " expected to be running in the same thread as the"
-                    << " asynchronous operations of the socket (the same strand)";
+                    << " asynchronous operations of the socket (the same strand)."
+                    << " This assertion is meant to help prevent a race condition.";
                 throw std::logic_error{ err_msg.str() };
             }
             this->m_socket_state = socket_state_e::closed;
@@ -133,6 +134,14 @@ namespace tcp {
             }
         }
         void on_close() {
+            if (!this->m_strand->running_in_this_thread()) {
+                std::ostringstream err_msg;
+                err_msg << "Error in function \"" << BOOST_CURRENT_FUNCTION << "\""
+                    << " expected to be running in the same thread as the"
+                    << " asynchronous operations of the socket (the same strand)."
+                    << " This assertion is meant to help prevent a race condition.";
+                throw std::logic_error{ err_msg.str() };
+            }
             this->m_sync_close_socket.done();
             try {
                 this->m_callback_closed.get()();
@@ -286,7 +295,8 @@ namespace tcp {
                 std::ostringstream err_msg;
                 err_msg << "Error in function \"" << BOOST_CURRENT_FUNCTION << "\""
                     << " expected to be running in the same thread as the"
-                    << " asynchronous operations of the acceptor (the same strand)";
+                    << " asynchronous operations of the acceptor (the same strand)."
+                    << " this assertion is meant to help prevent a race condition";
                 throw std::logic_error{ err_msg.str() };
             }
             this->m_acceptor_state = acceptor_state_e::closed;
@@ -331,10 +341,10 @@ namespace tcp {
                     bool continue_chain = true;
                     if (ec) {
                         const bool canceled = ec == asio::error::operation_aborted;
-                        const bool is_regular_cancel{
+                        const bool is_planned_cancel{
                             canceled && instance->m_acceptor_state == acceptor_state_e::canceled
                         };
-                        if (!is_regular_cancel) {
+                        if (!is_planned_cancel) {
                             std::ostringstream message;
                             message << "Error in acceptor callback chain: " << ec.message();
                             instance->m_logger.log_error(message.str());
@@ -553,8 +563,8 @@ namespace tcp {
             try {
                 const auto acceptor_chain_strong = m_acceptor_chain_weak.lock();
                 if (acceptor_chain_strong != nullptr) {
-                    acceptor_chain_strong->stop();
                     this->m_acceptor_chain_weak.reset();
+                    acceptor_chain_strong->stop();
                 }
             }
             catch (std::exception& e) {
@@ -569,6 +579,15 @@ namespace tcp {
         // because otherwise there will be a race condition with "m_connections".
         void stop_all_reader_chains() noexcept
         {
+            if (!this->m_acceptor_chain_weak.expired()) {
+                std::ostringstream err_msg;
+                err_msg << "Error in function \"" << BOOST_CURRENT_FUNCTION << "\""
+                        << " stop_all_reader_chains requires that the acceptor_chain"
+                        << " has already been stopped."
+                        << " This assertion is meant to help prevent a race condition.";
+                this->m_logger.log_error(err_msg.str());
+                return;
+            }
             try {
                 for (const std::weak_ptr<reader_chain>& connection_weak : *m_connections) {
                     const auto connection_strong = connection_weak.lock();
