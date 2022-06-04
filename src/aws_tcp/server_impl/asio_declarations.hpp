@@ -1,0 +1,8 @@
+//
+// Created by rzyro on 04/06/2022.
+//
+
+#ifndef AWS_TCP_ASIO_DECLARATIONS_HPP
+#define AWS_TCP_ASIO_DECLARATIONS_HPP
+
+#endif //AWS_TCP_ASIO_DECLARATIONS_HPP
