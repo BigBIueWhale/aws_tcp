@@ -1,8 +1,13 @@
-//
-// Created by rzyro on 04/06/2022.
-//
+#pragma once
 
-#ifndef AWS_TCP_ASIO_DECLARATIONS_HPP
-#define AWS_TCP_ASIO_DECLARATIONS_HPP
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/buffer.hpp>
+#include <boost/system/error_code.hpp>
+#include <boost/asio/error.hpp>
 
-#endif //AWS_TCP_ASIO_DECLARATIONS_HPP
+namespace tcp {
+    namespace asio = boost::asio;
+    using strand_t = asio::strand<asio::io_context::executor_type>;
+}

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <concepts:
+#include <concepts>
 #include <vector>
 #include <mutex>
 
