@@ -41,7 +41,7 @@ elseif (CMAKE_CXX_COMPILER_ID MATCHES GNU)
 
 endif()
 
-add_executable(aws_tcp main.cpp)
+add_executable(aws_tcp main.cpp utils.hpp)
 
 target_include_directories(aws_tcp PUBLIC "${CMAKE_SOURCE_DIR}/libs/GSL-4.0.0/include")
 target_include_directories(aws_tcp PUBLIC "${CMAKE_SOURCE_DIR}/libs/boost_1_79_0")
