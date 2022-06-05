@@ -10,12 +10,14 @@ namespace tcp {
     std::shared_ptr<acceptor_chain> acceptor_chain::New(std::shared_ptr<asio::io_context> butler,
                                                const asio::ip::tcp::endpoint &local_endpoint,
                                                std::function<func_sig_callback_socket> callback_socket,
+                                               std::function<void()> callback_closed_acceptor,
                                                util::logger_t callback_errors) {
-        auto ret = std::shared_ptr < acceptor_chain > {
+        auto ret = std::shared_ptr<acceptor_chain> {
                 new acceptor_chain{
                         std::move(butler),
                         local_endpoint,
                         std::move(callback_socket),
+                        std::move(callback_closed_acceptor),
                         std::move(callback_errors)
                 }
         };
@@ -56,11 +58,21 @@ namespace tcp {
         this->m_acceptor_state = acceptor_state_e::closed;
         boost::system::error_code ec{};
         this->m_acceptor.close(ec);
+        try {
+            this->m_callback_closed_acceptor.get()();
+        }
+        catch (std::exception& e) {
+            std::ostringstream err_msg;
+            err_msg << "Error in function \"" << BOOST_CURRENT_FUNCTION << "\""
+                    << R"( an error has occurred while calling "callback_closed_acceptor": )"
+                    << e.what();
+            this->m_logger.log_error(err_msg.str());
+        }
         this->m_sync_close_acceptor.done();
         if (ec) {
             std::ostringstream err_msg;
             err_msg << "Error in function \"" << BOOST_CURRENT_FUNCTION << "\""
-                    << " an error has occurred when closing the socket: " << ec.message();
+                    << " an error has occurred while closing the socket: " << ec.message();
             this->m_logger.log_error(err_msg.str());
         }
     }
@@ -68,11 +80,13 @@ namespace tcp {
     acceptor_chain::acceptor_chain(std::shared_ptr<asio::io_context> butler,
                                    const asio::ip::tcp::endpoint &local_endpoint,
                                    std::function<func_sig_callback_socket> callback_socket,
+                                   std::function<void()> callback_closed_acceptor,
                                    util::logger_t logger)
                                    : m_butler{std::move(butler)},
                                     m_strand{ asio::make_strand(this->m_butler->get_executor()) },
                                     m_acceptor{ this->m_strand, local_endpoint },
                                     m_callback_socket{ std::move(callback_socket) },
+                                    m_callback_closed_acceptor{ std::move(callback_closed_acceptor) },
                                     m_logger{ std::move(logger) }
     {
         this->m_acceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true));
@@ -90,38 +104,39 @@ namespace tcp {
         auto instance = this->shared_from_this();
         auto callback_accept =
                 [instance = std::move(instance),
-                        strand_for_current_socket = std::move(strand_for_current_socket),
-                        sock = sock](boost::system::error_code ec) mutable -> void {
-                    try {
-                        bool continue_chain = true;
-                        if (ec) {
-                            const bool canceled = ec == asio::error::operation_aborted;
-                            const bool is_planned_cancel{
-                                    canceled && instance->m_acceptor_state == acceptor_state_e::canceled
-                            };
-                            if (!is_planned_cancel) {
-                                std::ostringstream message;
-                                message << "Error in acceptor callback chain: " << ec.message();
-                                instance->m_logger.log_error(message.str());
-                            }
-                            if (canceled) {
-                                continue_chain = false;
-                                instance->close_acceptor();
-                            }
-                        } else {
-                            instance->m_callback_socket.get()(std::move(strand_for_current_socket),
-                                                              std::move(sock));
-                        }
-                        if (continue_chain) {
-                            instance->callback_chain();
-                        }
+                strand_for_current_socket = std::move(strand_for_current_socket),
+                sock = sock](const boost::system::error_code& ec) mutable -> void
+        {
+            try {
+                bool continue_chain = true;
+                if (ec) {
+                    const bool canceled = ec == asio::error::operation_aborted;
+                    const bool is_planned_cancel{
+                            canceled && instance->m_acceptor_state == acceptor_state_e::canceled
+                    };
+                    if (!is_planned_cancel) {
+                        std::ostringstream message;
+                        message << "Error in acceptor callback chain: " << ec.message();
+                        instance->m_logger.log_error(message.str());
                     }
-                    catch (std::exception &e) {
-                        std::ostringstream err_msg;
-                        err_msg << R"(Error in function "callback_accept". An exception was caught: )" << e.what();
-                        instance->m_logger.log_error(err_msg.str());
+                    if (canceled) {
+                        continue_chain = false;
+                        instance->close_acceptor();
                     }
-                };
+                } else {
+                    instance->m_callback_socket.get()(std::move(strand_for_current_socket),
+                                                        std::move(sock));
+                }
+                if (continue_chain) {
+                    instance->callback_chain();
+                }
+            }
+            catch (std::exception &e) {
+                std::ostringstream err_msg;
+                err_msg << R"(Error in function "callback_accept". An exception was caught: )" << e.what();
+                instance->m_logger.log_error(err_msg.str());
+            }
+        };
         this->m_acceptor.async_accept(*sock, std::move(callback_accept));
     }
 }

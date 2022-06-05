@@ -45,6 +45,7 @@ namespace tcp {
                 std::function<filter_func_sig> filter_incoming_connections,
                 std::function<callback_receive_data_func_sig> callback_received_data,
                 std::function<void(handle_id_t)> callback_closed_socket,
+                std::function<void()> callback_stopped,
                 util::logger_t logger);
 
         void stop() noexcept;
@@ -82,6 +83,7 @@ namespace tcp {
         gsl::not_null<std::function<filter_func_sig>> m_filter_incoming_connections;
         gsl::not_null<std::function<callback_receive_data_func_sig>> m_callback_received_data;
         gsl::not_null<std::function<void(handle_id_t)>> m_callback_closed_socket;
+        gsl::not_null<std::function<void()>> m_callback_stopped;
 
         util::logger_t m_logger;
 

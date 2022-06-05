@@ -13,12 +13,14 @@ namespace tcp {
             std::function<filter_func_sig> filter_incoming_connections,
             std::function<callback_receive_data_func_sig> callback_received_data,
             std::function<void(handle_id_t)> callback_closed_socket,
+            std::function<void()> callback_stopped,
             util::logger_t logger)
             : m_local_endpoint{std::move(local_endpoint)},
               m_butler{std::move(butler)},
               m_filter_incoming_connections{std::move(filter_incoming_connections)},
               m_callback_received_data{std::move(callback_received_data)},
               m_callback_closed_socket{std::move(callback_closed_socket)},
+              m_callback_stopped{ std::move(callback_stopped) },
               m_logger{std::move(logger)}
     {
         this->start_acceptor_chain();
@@ -89,15 +91,15 @@ namespace tcp {
 
             auto callback_receive =
                     [this,
-                            sock,
-                            current_handle_id](const std::span<const std::byte> bytes_received) -> drop_e
-                    {
-                        const drop_e drop_client = this->m_callback_received_data.get()(
-                                bytes_received,
-                                sock,
-                                current_handle_id);
-                        return drop_client;
-                    };
+                    sock,
+                    current_handle_id](const std::span<const std::byte> bytes_received) -> drop_e
+            {
+                const drop_e drop_client = this->m_callback_received_data.get()(
+                        bytes_received,
+                        sock,
+                        current_handle_id);
+                return drop_client;
+            };
             this->m_connections->emplace_back();
             const auto it_current_connection{
                     std::prev(this->m_connections->end())
@@ -107,17 +109,16 @@ namespace tcp {
             };
             auto callback_done_closing_socket =
                     [this,
-                            weak_rdc = std::move(weak_rdc),
-                            it_current_connection,
-                            current_handle_id]() -> void
-                    {
-                        const auto recently_dead_connections_strong = weak_rdc.lock();
-                        if (recently_dead_connections_strong != nullptr) {
-                            // TODO: Put a mutex to protect the list of connections
-                            recently_dead_connections_strong->push_back(it_current_connection);
-                        }
-                        this->m_callback_closed_socket.get()(current_handle_id);
-                    };
+                    weak_rdc = std::move(weak_rdc),
+                    it_current_connection,
+                    current_handle_id]() -> void
+            {
+                const auto recently_dead_connections_strong = weak_rdc.lock();
+                if (recently_dead_connections_strong != nullptr) {
+                    recently_dead_connections_strong->push_back(it_current_connection);
+                }
+                this->m_callback_closed_socket.get()(current_handle_id);
+            };
             // The reader_chain object will extend its own lifetime.
             // The only reason we keep a weak reference to it, is so that we can cancel it.
             *it_current_connection = reader_chain::New(
@@ -128,18 +129,23 @@ namespace tcp {
                     current_handle_id,
                     this->m_logger);
         };
+        auto callback_stopped = [this]() -> void
+        {
+            this->m_callback_stopped.get()();
+        };
         // The acceptor_chain will extend its own lifetime
         this->m_acceptor_chain_weak = acceptor_chain::New(
                 this->m_butler,
                 this->m_local_endpoint,
                 std::move(callback_socket),
+                std::move(callback_stopped),
                 this->m_logger);
     }
 
     void server::stop_acceptor_chain() noexcept
     {
         try {
-            const auto acceptor_chain_strong = m_acceptor_chain_weak.lock();
+            const auto acceptor_chain_strong = this->m_acceptor_chain_weak.lock();
             if (acceptor_chain_strong != nullptr) {
                 this->m_acceptor_chain_weak.reset();
                 acceptor_chain_strong->stop();

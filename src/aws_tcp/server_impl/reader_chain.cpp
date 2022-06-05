@@ -129,7 +129,7 @@ namespace tcp {
     void reader_chain::reading_chain() {
         auto instance = this->shared_from_this();
         auto callback_read = [instance = std::move(instance)](
-                const boost::system::error_code ec,
+                const boost::system::error_code& ec,
                 const std::size_t amount_bytes_read) -> void {
             try {
                 if (ec) {

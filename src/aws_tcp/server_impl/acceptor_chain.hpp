@@ -19,6 +19,7 @@ namespace tcp {
         static std::shared_ptr<acceptor_chain> New(std::shared_ptr<asio::io_context> butler,
                                                     const asio::ip::tcp::endpoint &local_endpoint,
                                                     std::function<func_sig_callback_socket> callback_socket,
+                                                    std::function<void()> callback_closed_acceptor,
                                                     util::logger_t callback_errors);
 
         void stop();
@@ -34,7 +35,8 @@ namespace tcp {
         };
         acceptor_state_e m_acceptor_state{acceptor_state_e::active};
         util::oneshot_wait m_sync_close_acceptor{};
-        gsl::not_null <std::function<func_sig_callback_socket>> m_callback_socket;
+        gsl::not_null<std::function<func_sig_callback_socket>> m_callback_socket;
+        gsl::not_null<std::function<void()>> m_callback_closed_acceptor;
         util::logger_t m_logger;
 
         void close_acceptor();
@@ -42,6 +44,7 @@ namespace tcp {
         explicit acceptor_chain(std::shared_ptr<asio::io_context> butler,
                                 const asio::ip::tcp::endpoint &local_endpoint,
                                 std::function<func_sig_callback_socket> callback_socket,
+                                std::function<void()> callback_closed_acceptor,
                                 util::logger_t logger);
 
         void callback_chain();
